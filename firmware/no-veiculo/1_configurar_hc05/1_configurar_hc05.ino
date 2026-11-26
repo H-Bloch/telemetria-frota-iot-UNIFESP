@@ -31,7 +31,8 @@
 #define ELM_MAC_HC05 "0010,CC,4F3603"
 #define ELM_PIN      "1234"
 
-String enviarAT(const String &cmd, uint32_t timeoutMs = 2000) {
+// esperarTudo = true: lê até o tempo acabar (para respostas longas, como o AT+HELP)
+String enviarAT(const String &cmd, uint32_t timeoutMs = 2000, bool esperarTudo = false) {
   while (Serial1.available()) Serial1.read();
   Serial1.print(cmd);
   Serial1.print("\r\n");
@@ -40,7 +41,7 @@ String enviarAT(const String &cmd, uint32_t timeoutMs = 2000) {
   uint32_t t0 = millis();
   while (millis() - t0 < timeoutMs) {
     while (Serial1.available()) r += (char)Serial1.read();
-    if (r.indexOf("OK") >= 0 || r.indexOf("ERROR") >= 0 || r.indexOf("FAIL") >= 0) {
+    if (!esperarTudo && (r.indexOf("OK") >= 0 || r.indexOf("ERROR") >= 0 || r.indexOf("FAIL") >= 0)) {
       delay(100);
       while (Serial1.available()) r += (char)Serial1.read();
       break;
@@ -100,6 +101,10 @@ void setup() {
 
   // 2. Informações do módulo
   enviarAT("AT+VERSION?");
+  // Lista de comandos (muitos clones respondem; mostra o comando de senha certo)
+  Serial.println("\nLista de comandos do modulo (AT+HELP):");
+  r = enviarAT("AT+HELP", 3000, true);
+  Serial.println();
 
   // 3. Configuração
   // Firmware 3.0-20170601 sai do modo AT ao mudar o ROLE.
@@ -126,15 +131,21 @@ void setup() {
     String("AT+PSWD=") + ELM_PIN,                 // firmware 2.0
     String("AT+PSWD=\"") + ELM_PIN + "\"",        // firmware 3.0
     String("AT+PSWD:") + ELM_PIN,                 // alguns clones
+    String("AT+PSWD") + ELM_PIN,
+    String("AT+PSWD ") + ELM_PIN,
     String("AT+PIN=") + ELM_PIN,
-    String("AT+PIN") + ELM_PIN                    // clones "_le"
+    String("AT+PIN=\"") + ELM_PIN + "\"",
+    String("AT+PIN") + ELM_PIN,                   // clones "_le"
+    String("AT+PASS=") + ELM_PIN,
+    String("AT+PASSWORD=") + ELM_PIN
   };
+  bool senhaOk = false;
   for (const String &cmd : senhas) {
-    r = enviarAT(cmd);
-    if (r.indexOf("OK") >= 0) break;
+    r = enviarAT(cmd, 1500);
+    if (r.indexOf("OK") >= 0) { senhaOk = true; break; }
   }
+  if (!senhaOk) Serial.println("  >>> Nenhum formato de senha funcionou: me mande a lista do AT+HELP acima.");
 
-  enviarAT("AT+UART=115200,0,0");             // serial rápida: o HC-05 manda o comando inteiro num pacote só
   enviarAT(String("AT+BIND=") + ELM_MAC_HC05);
 
   // 4. Conferência (antes de conectar, senão ele sai do modo AT)
@@ -142,8 +153,24 @@ void setup() {
   enviarAT("AT+ROLE?");
   enviarAT("AT+CMODE?");
   enviarAT("AT+BIND?");
-  enviarAT("AT+UART?");
   enviarAT("AT+PSWD?");
+  enviarAT("AT+PIN?");
+
+  // UART por último: alguns firmwares (ex. hc05V2.3_le) mudam de velocidade NA HORA
+  enviarAT("AT+UART=115200,0,0");             // serial rápida: o HC-05 manda o comando inteiro num pacote só
+  if (baudAchado != 115200) {
+    delay(300);
+    r = enviarAT("AT+UART?", 1500);
+    if (r.length() == 0) {                    // não respondeu: já mudou para 115200
+      Serial1.end();
+      delay(50);
+      if (invertido) Serial1.begin(115200, SERIAL_8N1, PIN_TX_HC05, PIN_RX_HC05);
+      else           Serial1.begin(115200, SERIAL_8N1, PIN_RX_HC05, PIN_TX_HC05);
+      delay(100);
+      Serial.println("  (o modulo mudou para 115200 na hora; continuando em 115200)");
+      enviarAT("AT+UART?", 1500);
+    }
+  }
 
   // 5. Pareia e testa a conexão (precisa do ELM ligado no carro)
   enviarAT("AT+INIT", 3000);                  // "ERROR:(17)" aqui é normal
