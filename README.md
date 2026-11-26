@@ -23,7 +23,7 @@ ELM327 (OBD2) ──BT clássico──> HC-05 ──UART──> Heltec V3 (carro
 ## Hardware
 
 - ELM327 Bluetooth clássico (clone v2.1), MAC `00:10:CC:4F:36:03`, PIN `1234`
-- Módulo HC-05
+- Módulo HC-05 **Bluetooth 2.0** (firmware `2.0-20100601` ou `3.0-20170601`). Clones com firmware `hc05V2.3_le` **não funcionam**: são BLE, não abrem conexão SPP com o ELM327 e recusam o `AT+PSWD`. Para reconhecer, olhe a plaquinha verde: o HC-05 verdadeiro tem dois chips (CSR BC417 + memória flash), e o clone tem um só, com o espaço da flash vazio.
 - 2× Heltec WiFi LoRa 32 V3 (ESP32-S3 + SX1262 + OLED 128×64), sempre **com a antena LoRa conectada**
 - LED azul + resistor de 100 Ω, LED vermelho + resistor de 330 Ω, buzzer ativo
 
@@ -74,6 +74,6 @@ O consumo é **estimado** (speed-density, a partir de MAP, RPM e temperatura do 
 
 - ✔ Leitura de velocidade testada no carro (ELM327 → HC-05 → Heltec), com LoRa entre as duas Heltec.
 - ✔ Envio estação → Wi-Fi → Google Sheets testado com a linha de teste.
-- ⏳ Falta testar no carro o HC-05 novo (firmware `hc05V2.3_le`), os dados reais chegando na planilha e o fechamento de viagem.
+- ⏳ Falta testar no carro o HC-05 de reposição (modelo original), os dados reais chegando na planilha e o fechamento de viagem.
 - ⏳ Falta testar o OTA nas placas.
 - ⏳ PCI e gabinete.

@@ -37,11 +37,11 @@
 // Wi-Fi da estação e URL da planilha
 // - Preenchidos: na 1ª gravação (USB) são SALVOS na memória da placa (não somem com atualizações)
 // - Vazios (""): a placa usa o que já está salvo -> é a versão que vai para o GitHub público
-#define WIFI_SSID    ""
-#define WIFI_SENHA   ""                  // rede aberta: deixe ""
+#define WIFI_SSID    "Pixel-9-blochzinho"
+#define WIFI_SENHA   "pisca123"          // rede aberta: deixe ""
 
 // URL da implantação do Apps Script (termina em /exec) — vazio = usa a salva
-#define URL_SCRIPT   ""
+#define URL_SCRIPT   "https://script.google.com/macros/s/AKfycbwiyevtamyA50e8jhz9Qrl81P9zUQPr9__5WO6l9fgM_30p1ztWyav53S1bTf_Pf4N-/exec"
 #define CHAVE        "obd2-lora-2026"     // tem que ser IGUAL à do Apps Script
 
 #define INTERVALO_LEITURA_MS   10000      // 1 linha em "Leituras" a cada 10 s
@@ -53,7 +53,7 @@
 // ---------- Atualização remota (OTA pelo GitHub) ----------
 // A cada nova versão: AUMENTE o FW_VERSAO aqui, exporte o .bin e suba no GitHub
 // junto com o versao.txt contendo o MESMO número.
-#define FW_VERSAO        1
+#define FW_VERSAO        2
 #define URL_VERSAO       "https://raw.githubusercontent.com/H-Bloch/telemetria-frota-iot-UNIFESP/main/firmware/gateway/versao.txt"
 #define URL_FIRMWARE     "https://raw.githubusercontent.com/H-Bloch/telemetria-frota-iot-UNIFESP/main/firmware/gateway/firmware.bin"
 #define INTERVALO_OTA_MS 300000            // confere a cada 5 min
@@ -110,6 +110,42 @@ struct Viagem {
   uint32_t inicioMs;
   int      tempMax;
 } viagem = {0, false, 0, -99};
+
+// Consumo instantâneo: calculado pela variação de distância e combustível
+// nos últimos ~JANELA_INST_MS (o carro manda os dois acumulados a cada 1 s)
+#define JANELA_INST_MS  5000
+#define N_AMOSTRAS      8
+struct Amostra { uint32_t ms; unsigned long distM, combMl; };
+Amostra amostras[N_AMOSTRAS];
+int nAmostras = 0, iAmostra = 0;
+float instKmL = -1;      // km/L instantâneo (-1 = sem dado)
+float instLh  = -1;      // L/h instantâneo (usado parado / devagar)
+
+void zerarInstantaneo() { nAmostras = 0; iAmostra = 0; instKmL = -1; instLh = -1; }
+
+void atualizarInstantaneo(unsigned long distM, unsigned long combMl, int vel) {
+  uint32_t agora = millis();
+  amostras[iAmostra] = {agora, distM, combMl};
+  iAmostra = (iAmostra + 1) % N_AMOSTRAS;
+  if (nAmostras < N_AMOSTRAS) nAmostras++;
+
+  // amostra mais antiga ainda dentro da janela
+  int maisAntiga = -1;
+  for (int k = 0; k < nAmostras; k++) {
+    const Amostra &a = amostras[k];
+    if (agora - a.ms <= JANELA_INST_MS && agora - a.ms >= 1500 &&
+        (maisAntiga < 0 || a.ms < amostras[maisAntiga].ms)) maisAntiga = k;
+  }
+  if (maisAntiga < 0) return;
+  const Amostra &a = amostras[maisAntiga];
+  if (distM < a.distM || combMl < a.combMl) { zerarInstantaneo(); return; }   // contador voltou
+
+  float dDistM  = distM - a.distM;
+  float dCombMl = combMl - a.combMl;
+  float dtH     = (agora - a.ms) / 3600000.0f;
+  instLh  = (dCombMl / 1000.0f) / dtH;
+  instKmL = (vel >= 5 && dCombMl > 0.5f) ? dDistM / dCombMl : -1;   // m/mL = km/L
+}
 
 // Fila local + Wi-Fi
 SemaphoreHandle_t mutexFila;
@@ -471,6 +507,7 @@ void tratarPacote() {
         viagem.tempMax  = -99;
         totalPacotes = 0;
         pacotesPerdidos = 0;
+        zerarInstantaneo();
         Serial.printf("# nova viagem %04X\n", via);
       }
 
@@ -482,6 +519,7 @@ void tratarPacote() {
       ultimoPacoteMs = millis();
       totalPacotes++;
       if (temp > viagem.tempMax) viagem.tempMax = temp;
+      atualizarInstantaneo(dist, comb, vel);
 
       Serial.printf("%04X,%lu,%d,%d,%d,%d,%lu,%lu,%d,%d,%.0f,%.1f\n", via, seq, est, vel, temp, rpm,
                     dist, comb, vmax, ult, rxRssi, rxSnr);
@@ -749,6 +787,30 @@ void desenharStatusRede() {
   }
 }
 
+// Dados da viagem atual: distância, combustível gasto, média e consumo instantâneo
+void telaViagem() {
+  char b[24];
+  oled.setFont(u8g2_font_6x10_tf);
+  oled.drawStr(24, 9, "VIAGEM");
+  snprintf(b, sizeof(b), "%d km/h", rxVel);
+  oled.drawStr(127 - oled.getStrWidth(b), 9, b);
+
+  snprintf(b, sizeof(b), "Dist  %6.1f km", rxDistM / 1000.0f);
+  oled.drawStr(0, 25, b);
+  snprintf(b, sizeof(b), "Gasto %6.2f L", rxCombMl / 1000.0f);
+  oled.drawStr(0, 37, b);
+
+  float media = kmPorLitro();
+  if (media > 0) snprintf(b, sizeof(b), "Media %6.1f km/L", media);
+  else           snprintf(b, sizeof(b), "Media     -- km/L");
+  oled.drawStr(0, 49, b);
+
+  if (instKmL > 0)      snprintf(b, sizeof(b), "Agora %6.1f km/L", instKmL > 99.9f ? 99.9f : instKmL);
+  else if (instLh >= 0) snprintf(b, sizeof(b), "Agora %6.1f L/h", instLh);
+  else                  snprintf(b, sizeof(b), "Agora     --");
+  oled.drawStr(0, 61, b);
+}
+
 void telaAtualizando() {
   oled.clearBuffer();
   oled.setFont(u8g2_font_6x10_tf);
@@ -781,7 +843,10 @@ void desenharTela(float dt) {
   oled.clearBuffer();
   if (semSinal) telaSemSinal(t);
   else switch (rxEstado) {
-    case 3:  telaVelocidade(rxVel, acimaDoLimite, t);           break;
+    case 3:                                          // alterna: velocidade 6 s, viagem 4 s
+      if (!acimaDoLimite && (t % 10000) >= 6000) telaViagem();
+      else telaVelocidade(rxVel, acimaDoLimite, t);
+      break;
     case 2:  telaDormindo(t);                                    break;
     case 1:  telaProcurando("PROCURANDO ELM327", t);             break;
     default: telaProcurando("CARRO INICIANDO", t);               break;
