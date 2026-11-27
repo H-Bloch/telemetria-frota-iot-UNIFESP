@@ -3,7 +3,6 @@
  * ----------------------------------------------------------
  * Substitui o DevKit: o HC-05 conecta no ELM327 por Bluetooth e a Heltec
  * conversa com o ELM pela serial do HC-05.
- *
  * - Lê a velocidade (PID 01 0D) numa tarefa separada (não trava a tela)
  * - OLED animado: carrinho na estrada, velocímetro de ponteiro, alerta com fogo e tela tremendo
  * - LED azul (pino 6): aceso = lendo o carro | piscando = ELM ok, carro não responde
@@ -13,7 +12,7 @@
  * - ATUALIZAÇÃO SEM FIO: segure o botão PRG por 3 s -> a placa cria a rede "OBD-CARRO";
  *   conecte o celular/PC nela, abra http://192.168.4.1 e envie o .ino.bin
  * - LoRa: envia "OBD,<viagem>,<seq>,<estado>,<vel>,<temp>,<rpm>,<dist_m>,<comb_ml>,<vmax>,<ultrap>"
- *   a cada 1 s em 915 MHz
+ *   a cada 0,5 s em 915 MHz
  *
  * LIGAÇÃO DO HC-05 (já configurado com o código 1):
  *   HC-05 VCC -> Heltec 5V
@@ -60,7 +59,8 @@
 #define BIP_ON_MS       150
 #define BIP_OFF_MS      350
 
-#define INTERVALO_LEITURA_MS 200
+#define INTERVALO_LEITURA_MS 100   // pausa mínima entre ciclos de leitura
+#define CICLOS_POR_EXTRA     3     // RPM/pressão/temperatura: 1 leitura a cada 3 de velocidade
 #define FALHAS_PARA_SEM_ECU  10
 
 // Consumo estimado por "speed-density" (o seu carro não tem sensor MAF).
@@ -76,7 +76,7 @@
 #define LORA_CR         7
 #define LORA_SYNC       0x12
 #define LORA_POWER_DBM  17
-#define LORA_INTERVALO_MS 1000
+#define LORA_INTERVALO_MS 500    // 2 pacotes por segundo (o pacote leva ~0,25 s no ar em SF9)
 
 // Pinos internos da Heltec V3 (não mexer)
 #define PIN_VEXT        36
@@ -299,24 +299,7 @@ void tarefaOBD(void *) {
     uint32_t t0 = millis();
     int v = lerVelocidade();
 
-    // Filtro: salto de mais de 25 km/h numa leitura só é quase sempre resposta picotada.
-    // Só aceita se a leitura seguinte confirmar o novo valor.
-    static int pendente = -1;
-    if (v >= 0 && estadoObd == LENDO && abs(v - (int)velObd) > 25) {
-      if (pendente >= 0 && abs(v - pendente) <= 10) {
-        pendente = -1;                         // confirmado: aceita
-      } else {
-        pendente = v;                          // suspeito: espera confirmar
-        Serial.printf("  (leitura %d km/h descartada, aguardando confirmar)\n", v);
-        v = -2;                                // não conta como falha
-      }
-    } else if (v >= 0) {
-      pendente = -1;
-    }
-
-    if (v == -2) {
-      // ignorada pelo filtro
-    } else if (v >= 0) {
+    if (v >= 0) {
       velObd = v;
       estadoObd = LENDO;
       falhas = 0;
@@ -327,8 +310,13 @@ void tarefaOBD(void *) {
       pronto = false;   // reinicializa (cobre queda do Bluetooth também)
     }
 
-    // Dados extras: um PID a mais por ciclo, alternando (velocidade continua em todo ciclo)
-    if (pronto && estadoObd == LENDO) {
+    // Dados extras: um PID a mais a cada CICLOS_POR_EXTRA ciclos, alternando.
+    // A velocidade é lida em TODO ciclo; os extras mudam devagar e podem esperar.
+    static uint8_t passoExtra = 0;
+    bool lerExtra = (++passoExtra >= CICLOS_POR_EXTRA);
+    if (lerExtra) passoExtra = 0;
+    if (pronto && estadoObd == LENDO) integrarViagem();
+    if (pronto && estadoObd == LENDO && lerExtra) {
       static uint8_t ciclo = 0;
       uint8_t b[2];
       switch (ciclo % 4) {
@@ -344,7 +332,6 @@ void tarefaOBD(void *) {
           break;
       }
       ciclo++;
-      integrarViagem();
     }
 
     uint32_t gasto = millis() - t0;
